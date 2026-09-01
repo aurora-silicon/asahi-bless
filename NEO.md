@@ -13,3 +13,12 @@ erase/program behavior.
 
 The matching T8140 QSPIMC Linux driver and J700 device tree live in the
 `nvram-qspi` branch of `aurora-silicon/linux`.
+
+## Qualified build
+
+The `0.4.4-neo.1` aarch64 binary with SHA-256
+`44bb88af037aa4d8404be5e9061e67a4da188c193035c933f94c2c0998fbce1f`
+was qualified on J700 against writable MTD flags `0xc00`. It listed the macOS
+and Omarchy volumes, set the next-only target to the already-selected Omarchy
+volume, reparsed that selection, and produced identical repeated full-NVRAM
+reads with no new QSPIMC timeout.
