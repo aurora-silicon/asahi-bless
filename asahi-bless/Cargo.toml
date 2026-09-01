@@ -1,11 +1,11 @@
 [package]
 name = "asahi-bless"
-version = "0.4.4"
+version = "0.4.4-neo.1"
 edition = "2021"
 license = "MIT"
 description = "A tool to select active boot partition on ARM Macs"
-homepage = "https://github.com/WhatAmISupposedToPutHere/asahi-nvram"
-repository = "https://github.com/WhatAmISupposedToPutHere/asahi-nvram"
+homepage = "https://github.com/aurora-silicon/asahi-bless"
+repository = "https://github.com/aurora-silicon/asahi-bless"
 
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

@@ -674,6 +674,17 @@ mod tests {
     }
 
     #[test]
+    fn test_twenty_nine_banks() -> crate::Result<()> {
+        let data = empty_nvram(29);
+        let nv = Nvram::parse(&data)?;
+
+        assert_eq!(nv.partitions.len(), 29);
+        assert!(matches!(nv.partitions[0], Slot::Valid(_)));
+        assert!(matches!(nv.partitions[28], Slot::Empty));
+        Ok(())
+    }
+
+    #[test]
     fn test_insert_variable() -> crate::Result<()> {
         let mut nvr = TestNvram::new(empty_nvram(2));
         let data = nvr.get_data().to_owned();

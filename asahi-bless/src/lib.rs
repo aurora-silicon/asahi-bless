@@ -312,7 +312,6 @@ const ALT_BOOT_VAR: &'static [u8] = b"alt-boot-volume";
 pub fn get_boot_volume(device: &str, next: bool) -> Result<BootCandidate> {
     let mut file = OpenOptions::new()
         .read(true)
-        .write(true)
         .open(device)
         .map_err(Error::NvramReadError)?;
     let mut data = Vec::new();
