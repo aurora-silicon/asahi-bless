@@ -89,7 +89,7 @@ impl<'a> Nvram<'a> {
             match Partition::parse(&nvr[offset..offset + PARTITION_SIZE]) {
                 Ok(p) => {
                     let p_gen = p.generation();
-                    if p_gen > max_gen {
+                    if valid_partitions == 0 || p_gen > max_gen {
                         active = i;
                         max_gen = p_gen;
                     }
@@ -211,7 +211,10 @@ type Result<T> = std::result::Result<T, V3Error>;
 
 impl<'a> Partition<'a> {
     fn parse(nvr: &'a [u8]) -> Result<Partition<'a>> {
-        if let Ok(header) = StoreHeader::parse(&nvr[..STORE_HEADER_SIZE]) {
+        if let Ok(header) = StoreHeader::parse(nvr) {
+            // Restrict every record to the declared store, even if the backing
+            // bank contains more bytes.
+            let nvr = &nvr[..header.size()];
             let mut offset = STORE_HEADER_SIZE;
             let mut values = Vec::new();
             // one byte past the last 0xFF or the end of partition
@@ -470,6 +473,9 @@ pub struct StoreHeader<'a> {
 
 impl<'a> StoreHeader<'a> {
     fn parse(nvr: &[u8]) -> Result<StoreHeader<'_>> {
+        if nvr.len() < STORE_HEADER_SIZE {
+            return Err(V3Error::ParseError);
+        }
         let name = &nvr[..4];
         let size = u32::from_le_bytes(nvr[4..8].try_into().unwrap());
         let generation = u32::from_le_bytes(nvr[8..12].try_into().unwrap());
@@ -479,6 +485,9 @@ impl<'a> StoreHeader<'a> {
         let system_size = u32::from_le_bytes(nvr[16..20].try_into().unwrap());
         let common_size = u32::from_le_bytes(nvr[20..24].try_into().unwrap());
 
+        if (size as usize) < STORE_HEADER_SIZE || size as usize > nvr.len() {
+            return Err(V3Error::ParseError);
+        }
         if name != VARIABLE_STORE_SIGNATURE {
             return Err(V3Error::ParseError);
         }
@@ -576,6 +585,9 @@ pub struct VarHeader<'a> {
 
 impl<'a> VarHeader<'a> {
     fn parse(nvr: &[u8]) -> Result<VarHeader<'_>> {
+        if nvr.len() < VAR_HEADER_SIZE {
+            return Err(V3Error::ParseError);
+        }
         let start_id = u16::from_le_bytes(nvr[..2].try_into().unwrap());
         if start_id != VARIABLE_DATA {
             return Err(V3Error::ParseError);
@@ -587,7 +599,11 @@ impl<'a> VarHeader<'a> {
         let guid = &nvr[16..32];
         let crc = u32::from_le_bytes(nvr[32..36].try_into().unwrap());
 
-        if VAR_HEADER_SIZE + (name_size + data_size) as usize > nvr.len() {
+        let record_size = (name_size as usize)
+            .checked_add(data_size as usize)
+            .and_then(|size| size.checked_add(VAR_HEADER_SIZE))
+            .ok_or(V3Error::ParseError)?;
+        if name_size == 0 || record_size > nvr.len() {
             return Err(V3Error::ParseError);
         }
 
@@ -671,6 +687,79 @@ mod tests {
         let mut data = vec![0xFF; PARTITION_SIZE * bank_count];
         data[0..STORE_HEADER_SIZE].copy_from_slice(store_header());
         data
+    }
+
+    #[test]
+    fn test_store_bounds() {
+        for size in [
+            0,
+            (STORE_HEADER_SIZE - 1) as u32,
+            PARTITION_SIZE as u32 + 1,
+            u32::MAX,
+        ] {
+            let mut data = empty_nvram(1);
+            data[4..8].copy_from_slice(&size.to_le_bytes());
+            assert!(Nvram::parse(&data).is_err());
+        }
+        for len in 0..STORE_HEADER_SIZE {
+            assert!(StoreHeader::parse(&store_header()[..len]).is_err());
+            assert!(super::Partition::parse(&store_header()[..len]).is_err());
+        }
+    }
+
+    #[test]
+    fn test_record_bounds() {
+        let mut record = vec![0; VAR_HEADER_SIZE];
+        record[..2].copy_from_slice(&VARIABLE_DATA.to_le_bytes());
+        // Zero-length names cannot have a terminating NUL.
+        assert!(VarHeader::parse(&record).is_err());
+        for (name, value) in [(1u32, 0u32), (u32::MAX, 1), (1, u32::MAX)] {
+            record[8..12].copy_from_slice(&name.to_le_bytes());
+            record[12..16].copy_from_slice(&value.to_le_bytes());
+            assert!(VarHeader::parse(&record).is_err());
+        }
+        for len in 0..VAR_HEADER_SIZE {
+            assert!(VarHeader::parse(&record[..len]).is_err());
+        }
+    }
+
+    #[test]
+    fn test_corrupt_newer_bank_is_skipped() -> crate::Result<()> {
+        let mut data = empty_nvram(29);
+        let newer = 8 * PARTITION_SIZE;
+        data[newer..newer + STORE_HEADER_SIZE].copy_from_slice(store_header());
+        data[newer + 8..newer + 12].copy_from_slice(&100u32.to_le_bytes());
+        data[newer + 4..newer + 8].copy_from_slice(&u32::MAX.to_le_bytes());
+        let nv = Nvram::parse(&data)?;
+        assert_eq!(nv.active, 0);
+        assert!(matches!(nv.partitions[8], Slot::Invalid));
+        Ok(())
+    }
+
+    #[test]
+    fn test_generation_zero_after_invalid_bank() -> crate::Result<()> {
+        let mut data = vec![0xff; 2 * PARTITION_SIZE];
+        data[PARTITION_SIZE..PARTITION_SIZE + STORE_HEADER_SIZE].copy_from_slice(store_header());
+        data[PARTITION_SIZE + 8..PARTITION_SIZE + 12].copy_from_slice(&0u32.to_le_bytes());
+        let nv = Nvram::parse(&data)?;
+        assert_eq!(nv.active, 1);
+        assert_eq!(nv.active_part().header.generation, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn test_record_may_not_cross_declared_store() -> crate::Result<()> {
+        let mut data = empty_nvram(1);
+        let end = STORE_HEADER_SIZE + VAR_HEADER_SIZE + 1;
+        data[4..8].copy_from_slice(&(end as u32).to_le_bytes());
+        data[STORE_HEADER_SIZE..STORE_HEADER_SIZE + 2]
+            .copy_from_slice(&VARIABLE_DATA.to_le_bytes());
+        data[STORE_HEADER_SIZE + 8..STORE_HEADER_SIZE + 12].copy_from_slice(&1u32.to_le_bytes());
+        data[STORE_HEADER_SIZE + 12..STORE_HEADER_SIZE + 16].copy_from_slice(&10u32.to_le_bytes());
+        let nv = Nvram::parse(&data)?;
+        assert!(nv.active_part().values.is_empty());
+        assert_eq!(nv.active_part().usable_size(), STORE_HEADER_SIZE);
+        Ok(())
     }
 
     #[test]
